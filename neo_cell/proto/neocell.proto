@@ -1,0 +1,159 @@
+// neocell PPE/SPE worker contract.
+//
+// This is the control plane only. Bulk numeric data larger than the
+// inline limit is NOT carried here: the message carries a DataRef and the
+// bytes travel separately as an Arrow IPC file (see neocell/buffers.py).
+//
+// Transport is local: a child process's stdin/stdout. There is no
+// network, no HTTP, and no RPC framework in this schema -- it is a data
+// format, deliberately, so that a Java or Rust worker only needs a
+// protobuf runtime and Arrow to participate.
+//
+// Framing around each message: u32 little-endian length, then the
+// serialized Envelope. See _docs/03-protocol.md.
+
+syntax = "proto3";
+
+package neocell.v1;
+
+// How the bytes behind a DataRef are encoded.
+enum DataFormat {
+  DATA_FORMAT_UNSPECIFIED = 0;
+  // Little-endian float32, the pre-Arrow inline encoding.
+  DATA_FORMAT_RAW_F32 = 1;
+  // Arrow IPC *file* format (not stream): random access, memory-mappable.
+  DATA_FORMAT_ARROW_IPC = 2;
+}
+
+// A handle to bulk data held outside the control message.
+//
+// The receiver resolves the id through its own BufferManager. Ownership
+// and lifetime belong to NeoCell, not to the format: a receiver must
+// release the ref when it is done, and the producer may delete the file
+// once every ref has been released.
+message DataRef {
+  // Opaque identifier issued by the producer's BufferManager.
+  string id = 1;
+  // Size of the encoded data in bytes.
+  uint64 byte_length = 2;
+  DataFormat format = 3;
+  // Local filesystem location. Local-only by design; never a URL.
+  string location = 4;
+  // Number of float32 elements, when the payload is numeric.
+  uint64 element_count = 5;
+  // Arrow schema name of the referenced file, for validation on open.
+  string arrow_schema = 6;
+}
+
+// Handshake: PPE -> SPE. Sent immediately after spawn.
+message Hello {
+  uint32 protocol = 1;
+  string worker_id = 2;
+  uint64 local_store_bytes = 3;
+}
+
+// Handshake reply: SPE -> PPE. The op list is the extension point.
+message HelloAck {
+  uint32 protocol = 1;
+  string worker_id = 2;
+  uint32 pid = 3;
+  uint64 local_store_bytes = 4;
+  repeated string ops = 5;
+}
+
+// Op parameters.
+//
+// Deliberately a typed message rather than google.protobuf.Struct: the
+// op catalogue is small and fixed, so a worker gets compile-time checking
+// instead of dynamic map lookups, and the schema stays free of
+// well-known-type imports. That matters because a bare protoc install
+// does not ship google/protobuf/*.proto, so any WKT dependency would make
+// the build depend on whatever vendored copy happened to be on the box.
+// Adding a knob means adding a field, which is backward compatible.
+message OpParams {
+  // scale, mix_work
+  double factor = 1;
+  // axpy
+  double a = 2;
+  double b = 3;
+  // mix_work
+  uint32 rounds = 4;
+  // reserved for windowed ops such as box_blur
+  uint32 radius = 5;
+}
+
+message Exec {
+  string task_id = 1;
+  string op = 2;
+  OpParams params = 3;
+  // Per-input buffer sizes, so the receiver can split inline payloads.
+  repeated uint64 input_lengths = 4;
+  uint64 input_bytes = 5;
+  // Populated when the data ships out of band.
+  repeated DataRef input_refs = 6;
+  // Populated when the data is small enough to inline.
+  bytes inline_payload = 7;
+  // W3C trace context carrier, so the worker's span parents correctly.
+  map<string, string> trace = 8;
+  uint32 task_index = 9;
+  string label = 10;
+}
+
+// Measurements only the worker can make.
+message ExecStats {
+  double stage_s = 1;
+  double exec_s = 2;
+  uint64 store_high_water = 3;
+  uint64 store_bytes = 4;
+  uint64 tasks_done = 5;
+}
+
+message Result {
+  string task_id = 1;
+  // "ok" or "error".
+  string status = 2;
+  string worker_id = 3;
+  bytes inline_payload = 4;
+  DataRef output_ref = 5;
+  uint64 output_bytes = 6;
+  ExecStats stats = 7;
+  string error = 8;
+}
+
+message Cancel {
+  string task_id = 1;
+}
+
+message Cancelled {
+  string task_id = 1;
+  string worker_id = 2;
+}
+
+message Shutdown {}
+
+message Bye {
+  string worker_id = 1;
+}
+
+message ErrorFrame {
+  string task_id = 1;
+  string worker_id = 2;
+  string message = 3;
+}
+
+// Every message on the wire is one of these. A single envelope keeps
+// framing trivial and leaves room for new message types without changing
+// the wire format.
+message Envelope {
+  oneof body {
+    Hello hello = 1;
+    HelloAck hello_ack = 2;
+    Exec exec = 3;
+    Result result = 4;
+    Cancel cancel = 5;
+    Cancelled cancelled = 6;
+    Shutdown shutdown = 7;
+    Bye bye = 8;
+    ErrorFrame error = 9;
+  }
+}

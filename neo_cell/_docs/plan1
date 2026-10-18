@@ -1,0 +1,85 @@
+Cell-Style Compute Model — High-Level Technical Design
+
+Status: Draft 0.1
+Purpose: Build a small x86-64 application that demonstrates the Cell-style way of organizing work and data—not a PS3 emulator or a performance model.
+
+    “One general-purpose PPE coordinates work across a pool of specialized SPEs. The PPE dispatches tasks and manages control flow; each SPE is a focused worker, efficient at data-parallel jobs, with its own local memory and explicit data transfers.”
+
+1. Scope and guiding principles
+
+The first version runs on x86-64 only. It models one PPE and a configurable pool of SPEs; it does not reproduce Cell instructions, timings, cache behavior, or performance.
+
+The design should make four ideas visible:
+
+    Central coordination: the PPE divides work, schedules it, and collects results.
+    Specialized workers: SPEs execute bounded tasks rather than managing the whole application.
+    Explicit data movement: an SPE works on data staged into its own local workspace.
+    Replaceable workers: the PPE communicates through a stable interface, so an SPE can be implemented in Python first and Java later.
+
+The main architectural choice is to make SPEs separate worker processes from the beginning. They can all be written in Python initially, while a language-neutral process protocol makes replacing one or more with Java less disruptive than changing an in-process Python API.
+2. Main components
+
+PPE — coordinator and scheduler
+Accepts a job, divides it into tasks, assigns tasks to SPEs, and handles results and errors. It owns orchestration and global job state; it does not directly perform all worker computation.
+
+SPE pool — task workers
+A configurable set of workers. Each worker accepts a task, stages its input into a bounded local workspace, performs its assigned operation, and returns a result or error. Worker implementations may differ in language.
+
+Task and data model
+A task describes what operation to perform and which data to use, without assuming a particular worker language. Inputs and outputs have identifiers, sizes, and formats. The model should support splitting a large job into independent chunks.
+
+Transfer layer — the conceptual “DMA” path
+Moves data between the PPE’s job memory and a worker’s local workspace. In the first version, transfers can simply be explicit copies. The important feature is that transfers are visible, measurable, and separate from computation.
+
+Worker adapter — the replaceable interface
+Starts workers, sends tasks and input data, receives results, and reports worker health. The PPE depends on this interface, not on Python-specific worker code.
+
+Metrics and trace log
+Records task assignment, transfer sizes, worker execution, queue wait, failures, and result collection. This lets the demo show the consequences of task size, data locality, and worker count.
+3. Data flow
+text
+
+Job submitted     |     vPPE validates job and divides it into tasks     |     vPPE schedules tasks across available SPEs     |     vTransfer layer stages each task's inputinto that SPE's bounded local workspace     |     vSPE executes its assigned operation     |     vSPE returns result or error     |     vPPE collects results and assembles final output
+
+A typical task lifecycle is:
+
+    The PPE receives a job and breaks it into independent chunks.
+    The scheduler assigns each chunk to an available SPE.
+    The transfer layer copies the chunk’s input to that SPE’s local workspace.
+    The SPE runs its operation on the staged input; it does not reach directly into arbitrary global job state.
+    The SPE returns output data and a status.
+    The PPE combines results, records metrics, and completes the job.
+
+For the initial demo, use an array or image-processing workload with independent chunks. It makes partitioning, local staging, parallel workers, and result assembly easy to observe.
+4. Worker interface
+
+Keep the interface small and versioned. Conceptually, it needs to support:
+
+    Start / ready: launch a worker and learn which operations it supports.
+    Load data: transfer an input buffer or task data to the worker.
+    Execute: submit a task using named operation and parameters.
+    Return result: provide output data, status, and task identifier.
+    Cancel / stop: stop work cleanly and shut down the worker.
+
+Use a language-neutral, length-prefixed protocol over the worker process’s standard input/output for the first version. A simple JSON control message plus a binary payload is adequate for a prototype. Keep logs on standard error so they cannot corrupt protocol messages.
+
+Initially, transfer payloads by copying them through the protocol. If measurement shows this is a bottleneck, add shared-memory buffers behind the same adapter. That keeps the initial design simpler while preserving an optimization path.
+5. Python parallelism and worker execution
+
+As of October 18, 2026, Python 3.15.0 is the newest stable major release. python.org For the PPE, use Python’s asynchronous I/O for worker lifecycle and coordination, and keep scheduling decisions explicit and inspectable.
+
+For parallel execution, keep the choice behind the worker adapter rather than making the PPE depend on one Python concurrency mechanism. Python’s free-threaded build is supported but remains optional; test it as an execution option, since extensions must also be compatible with free-threading. 
+
+ A process-based worker setup is a good initial default: it provides isolation, mirrors the eventual Java process boundary, and does not require the PPE to depend on free-threaded behavior. Benchmark free-threaded Python and Python’s isolated-interpreter options separately; use whichever fits the workload and dependencies.
+
+Important distinction: free-threading is an implementation choice for running Python code concurrently. It is not the project’s architecture. The architecture is the PPE/SPE division, explicit data movement, and replaceable worker interface.
+6. What the first version will model
+
+    A single PPE with a task queue and scheduler.
+    A configurable number of SPEs, each with a configurable local workspace limit.
+    Explicit input and result transfers.
+    Basic task splitting, worker assignment, error handling, and result assembly.
+    Metrics for bytes transferred, queue time, execution time, and worker utilization.
+    A Python worker implementation that can later be replaced by a Java worker using the same protocol.
+
+The first version should not claim to reproduce Cell hardware performance or the details of its memory system. Transfer costs can initially be recorded as byte counts; configurable simulated delays can be added later to demonstrate how transfer volume and task size affect the workflow.

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>neocell test UI</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>neocell <span class="sub">PPE / SPE test console</span></h1>
+  <div class="status" id="status">idle</div>
+</header>
+
+<main>
+  <section class="panel" id="controls">
+    <h2>Run</h2>
+
+    <div class="scenarios" id="scenarios"></div>
+
+    <div class="fields">
+      <label>Workload
+        <select id="workload"></select>
+      </label>
+      <label>SPEs <input type="number" id="spe" min="1" max="32" value="4"></label>
+      <label>Elements <input type="number" id="elements" min="256" value="262144"></label>
+      <label>Chunk (elements) <input type="number" id="chunk" min="32" value="1024"></label>
+      <label>Local store (bytes) <input type="number" id="store_bytes" min="1024" value="131072"></label>
+      <label>DMA bandwidth (bytes/s, blank = free)
+        <input type="number" id="dma_bw" placeholder="free">
+      </label>
+    </div>
+
+    <div class="hint" id="derived"></div>
+
+    <div class="buttons">
+      <button id="run" class="primary">Run</button>
+      <button id="stop">Stop</button>
+    </div>
+    <div class="error" id="error"></div>
+  </section>
+
+  <section class="panel" id="spe-panel">
+    <h2>SPEs</h2>
+    <div class="spe-grid" id="speGrid"></div>
+  </section>
+
+  <section class="panel" id="task-panel">
+    <h2>Tasks <span class="sub" id="taskCounts"></span></h2>
+    <div class="table-wrap">
+      <table id="taskTable">
+        <thead><tr>
+          <th>#</th><th>task</th><th>worker</th><th>state</th>
+          <th>queue ms</th><th>exec ms</th><th>in B</th><th>out B</th>
+        </tr></thead>
+        <tbody id="taskBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="result-panel">
+    <h2>Result</h2>
+    <div id="result" class="result">no run yet</div>
+  </section>
+
+  <section class="panel" id="log-panel">
+    <h2>Event log</h2>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+Recommended stack, as adopted
+
+This is the successor to the original stack proposal for this project. It
+records what was actually built, what was rejected and why, and what is
+still open. Read it alongside `_docs/01-architecture-decisions.md`, which
+carries the reasoning in full.
+
+Scope reminder: NeoCell runs on one machine. One PPE, a pool of SPEs as
+child processes, no network anywhere in the job path. Everything below is
+chosen with that constraint in mind.
+
+Layer	Use	NeoCell still owns
+PPE coordination	Python asyncio, subprocess	PPE scheduler, task lifecycle, worker assignment, Cell-style rules
+Worker contract	Protocol Buffers over a length-prefixed pipe	The schema, its versioning, and every scheduling decision
+Bulk data	Arrow IPC files, by reference above 1 MiB	Data-reference ownership, transfer decisions, workspace limits, cleanup
+Scheduling concepts	Borrow ideas from Ray Core and Dask	A small single-machine scheduler, designed here
+Observability	OpenTelemetry, exporting to local JSONL	Every event and measurement that gets recorded
+Kernel parallelism	Not adopted; revisit only if a kernel needs it	Whether and how a worker uses internal parallelism
+
+Use Ray and Dask as design references, not as NeoCell's runtime. Neither is
+a dependency.
+
+What was adopted, and why
+
+Protocol Buffers, as a data format
+The contract is `proto/neocell.proto` with generated Python bindings, sent
+as length-prefixed messages over a child's stdin and stdout. Protobuf was
+chosen for the format, not for an RPC layer: the project has no network,
+so a service definition, generated stubs, and transport flow control would
+all be paid for and never used. A Java worker needs a protobuf runtime, an
+Arrow reader, and two file descriptors.
+
+The schema deliberately avoids `google/protobuf/*.proto`. A bare `protoc`
+install does not ship the well-known types, and depending on whatever
+vendored copy sits on the machine makes builds irreproducible. Op
+parameters are a typed message instead of a `Struct`, which also gives
+workers compile-time checking.
+
+Arrow IPC, with NeoCell owning lifetime
+Payloads at or under 1 MiB ride inline in the message. Anything larger is
+written as an Arrow IPC file and referenced by a `DataRef`, so the control
+message carries a pointer rather than a payload. `BufferManager` issues the
+ids, tracks size and lifetime, and deletes a file once every ref to it is
+released.
+
+The file format is chosen over the stream format specifically because it is
+random-access and supports `pa.memory_map`: the reader maps the bytes
+instead of copying them. Arrow supplies the representation; NeoCell owns
+the ownership and scheduling semantics, which was the original intent of
+this layer and is now actually implemented.
+
+OpenTelemetry, on by default
+Spans cross the process boundary using W3C `traceparent` carried in the
+`exec` frame, so a task dispatched by the PPE and executed by an SPE reads
+as one trace across two services. Output goes to local JSONL files and
+stderr, never to a collector, because there is no network.
+
+Telemetry is enabled by default even though it costs roughly 0.2 ms per
+task. While the system is still moving, the value of having a record of
+what happened outweighs the cost, and a diagnostic you must remember to
+enable is one you will not have when you need it.
+
+What was rejected
+
+Remote RPC
+Rejected outright. The project is single-machine. Cross-machine calls,
+service discovery, streaming, and transport-level flow control are not
+requirements, and adopting them would add a network stack, a service
+definition, and a code-generation step to a path that is two pipes.
+
+Arrow for everything
+Adopted only for payloads over the inline limit. Arrow IPC for small
+payloads would cost a file open and a read for data that fits in a message,
+which is the opposite of an optimisation.
+
+A shared-memory fast path
+Still open, not rejected. It would remove a copy for large payloads, but it
+reintroduces the coherency questions that a copied buffer avoids, and it
+weakens the story for a second-language worker. Worth revisiting only with
+measurements showing transfer volume actually dominating.
+
+A kernel runtime inside an SPE
+Not adopted. The first SPEs are processes, not accelerator kernels. Adding
+a compiled-kernel runtime before there is a measured need would complicate
+the prototype for no present benefit.
+
+Still open
+
+The items below were identified in the review and are queued in
+`_docs/05-roadmap.md`:
+
+- Locality-aware dispatch. The scheduler weighs whether a worker is free
+  but not the cost of moving a task's input to it. This is the remaining
+  gap in the Cell idea and the highest-value next step.
+- Explicit task states, as a state machine with legal transitions, rather
+  than a status string.
+- Resource requests per task.
+- Explicit backpressure, bounding the ready queue rather than relying on
+  worker slots.
+- Future-like result references, instead of awaiting results inline.
+- Streaming a large `DataRef` through the local store in blocks, so a
+  chunk need not fit the store in its entirety.
+
+Deliberately out of scope
+
+Named so they read as decisions rather than oversights: unified main
+memory, cache coherency, a real DMA engine, MFC channel ordering,
+instruction-level timing, and any claim about PS3 or Cell performance.
+`neocell` demonstrates an architecture; it does not model hardware.
